@@ -1,0 +1,43 @@
+[Unit]
+Description=Shared Reading Relay for Instapaper and Kobo
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=exedev
+Group=exedev
+ExecStart=/usr/local/bin/reading-relay
+EnvironmentFile=/etc/reading-relay/reading-relay.env
+LoadCredential=instapaper_consumer_key:/etc/reading-relay/credentials/instapaper_consumer_key
+LoadCredential=instapaper_consumer_secret:/etc/reading-relay/credentials/instapaper_consumer_secret
+LoadCredential=instapaper_access_token:/etc/reading-relay/credentials/instapaper_access_token
+LoadCredential=instapaper_access_token_secret:/etc/reading-relay/credentials/instapaper_access_token_secret
+StateDirectory=reading-relay
+StateDirectoryMode=0700
+RuntimeDirectory=reading-relay
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/reading-relay /run/reading-relay
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
