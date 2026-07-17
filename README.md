@@ -1,47 +1,26 @@
-# Agent Reading Relay
+# Agent Reading Relay: agent research, delivered to your e-reader
 
-Turn agent-generated research, summaries, and reading briefs into calm, long-form
-reading on an e-reader.
+A small Go service that lets my agents publish research briefs to Instapaper, so I catch up on AI from my Kobo instead of scrolling X all evening.
 
-Agent Reading Relay gives AI agents a narrow, credential-isolated path to save
-existing articles or publish generated Markdown to Instapaper. Kobo then receives
-the article through its Instapaper integration.
+Keeping up with AI had turned my evenings into a scroll session. Somewhere in the X feed is everything I actually want: the new stuff OpenAI and Anthropic shipped, interesting use cases, a neat skill somebody built. The good stuff is all in there, buried between the noise, and digging it out takes the whole evening.
 
-## Why this exists
+Meanwhile I have agents that are good at exactly that job. They can compare sources all day and turn a messy stream of updates into one readable brief. But a chat window is a terrible place to read 2,000 words.
 
-AI agents are good at collecting information, comparing sources, and turning a
-messy stream of updates into a useful narrative. The awkward part is deciding
-where that narrative should go.
+So I built [Agent Reading Relay](https://github.com/andrewedunn/agent-reading-relay). It gives my agents a narrow, credential-isolated path to publish generated Markdown (or save an existing article) to Instapaper. My Kobo syncs with Instapaper, so the brief just shows up on the e-reader. The agent does the scrolling during the day. I do the reading in the evening, on e-ink, with X closed.
 
-This project creates a reading inbox for agents. An agent can research a topic,
-write a sourced summary, and send it to an e-reader instead of leaving it in a
-chat window. That makes workflows such as these practical:
+## What I actually use it for
 
-- Summarize recent OpenAI or Anthropic/Claude product changes.
+An agent researches a topic, writes a sourced summary, and sends it to my reader instead of leaving it in a chat window. Things this makes practical:
+
+- Summarize recent OpenAI or Anthropic product changes.
 - Turn a research session into a complete evening reading brief.
-- Prepare a weekly AI, software, or industry catch-up.
+- Prepare a weekly AI or software catch-up.
 - Explain a technical topic at long-form depth.
-- Save an existing web article without rewriting it.
+- Save an existing web article as-is, without rewriting it.
 
-The goal is to catch up deliberately in the evening—not spend the evening
-scrolling social feeds looking for the important parts.
+One note on the Kobo side: Kobo's read-later integration used to be Pocket, which [shut down on July 8, 2025](https://help.kobo.com/hc/en-us/articles/360017763753-Use-the-Pocket-App-with-your-Kobo-eReader). Kobo now [connects to Instapaper](https://www.instapaper.com/docs/ereaders/kobo) directly, and the free tier works fine. Anything else that reads from Instapaper would work too; the relay only knows about Instapaper.
 
-## What it includes
-
-- **Reading Relay service:** a small Go service with a SQLite article archive.
-- **`readerctl` CLI:** publishes generated Markdown or saves an existing URL.
-- **Instapaper Full API client:** OAuth 1.0a signing and xAuth token setup.
-- **Safe generated content:** Markdown is rendered to sanitized semantic HTML.
-- **Draft-first workflow:** external delivery requires an explicit `--send` flag.
-- **Credential isolation:** agents never receive Instapaper credentials.
-- **Local agent API:** agents communicate over a mode `0600` Unix socket.
-- **Idempotent delivery:** duplicate submissions are deduplicated, and concurrent
-  sends have a single delivery winner.
-- **Hermes skill:** `skill/send-to-reader/SKILL.md` teaches agents how and when to
-  use the relay, including e-reader formatting practices.
-- **Hardened systemd unit:** uses systemd credentials and a restricted runtime.
-
-## Architecture
+## How it fits together
 
 ```mermaid
 flowchart LR
@@ -57,47 +36,26 @@ flowchart LR
 
 There are two content paths:
 
-1. **Existing URL:** Instapaper receives the original article URL.
-2. **Generated Markdown:** the relay renders and sanitizes the Markdown, stores it
-   under a stable article URL, and supplies the complete HTML to Instapaper.
+1. An existing URL: Instapaper gets the original article URL, same as if I'd saved it myself.
+2. Generated Markdown: the relay renders and sanitizes the Markdown, stores it under a stable article URL, and hands the complete HTML to Instapaper in the API request.
 
-Instapaper does not need to crawl the generated article URL because the HTML is
-included in the API request. The URL can remain behind an authenticated proxy.
+That second path has a nice property: because the HTML rides along in the request, Instapaper never needs to crawl the generated article's URL. The article page can live behind an authenticated proxy where only I can see it.
 
-## Deployment scope
+## The pieces
 
-The reference deployment currently targets **exe.dev**. Generated article pages
-trust the `X-ExeDev-UserID` and `X-ExeDev-Email` headers injected by the exe.dev
-authenticated proxy, and the supplied systemd unit uses the default `exedev`
-service account.
+The repo is a small Go project, and everything in it exists to make the picture above safe and boring:
 
-The core relay, CLI, SQLite store, Markdown renderer, and Instapaper client are
-ordinary Linux/Go components. To deploy behind another proxy, adapt the identity
-header checks in `internal/relay/http.go` and change the systemd `User=`/`Group=`
-settings. Do not expose the article handler directly while trusting headers that
-an untrusted client can spoof.
+- The relay service itself, with a SQLite archive of every article.
+- `readerctl`, the CLI agents call. It publishes generated Markdown or saves a URL.
+- An [Instapaper Full API](https://www.instapaper.com/developers/v1/full-api/overview) client that handles OAuth 1.0a request signing and the one-time xAuth token exchange. Instapaper's API is refreshingly light on enterprise ceremony, but OAuth 1.0a signing is still the least fun code in here, so it ships finished.
+- A Markdown renderer that outputs sanitized, semantic HTML. Agents write Markdown; raw HTML doesn't get through.
+- A draft-first workflow: nothing leaves the box without an explicit `--send` flag.
+- A local agent API over a mode `0600` Unix socket.
+- Idempotent delivery: duplicate submissions are deduplicated, and when two sends race, exactly one wins.
+- A skill file (`skill/send-to-reader/SKILL.md`) that teaches Hermes agents how and when to use the relay, including how to format for a small e-ink screen.
+- A hardened systemd unit using systemd credentials and a restricted runtime.
 
-## Security model
-
-The relay is designed as a personal, single-owner service—not a public,
-multi-tenant publishing platform.
-
-- Instapaper secrets are loaded only by the systemd service.
-- `readerctl` and the agent skill contain no upstream credentials.
-- The write API is exposed only through a local Unix socket.
-- The public article listener binds to loopback by default.
-- Generated article pages require trusted proxy identity headers.
-- Agent labels are allowlisted for policy and audit purposes. They are not
-  cryptographic identities when all agents run under the same operating-system
-  account.
-- Draft creation is local. `--send` is required for an Instapaper write.
-- Credentials, databases, local environment files, and build artifacts are
-  excluded from version control.
-
-If the host is multi-user or local processes are not trusted, add a stronger
-proxy-authentication mechanism or isolate the service in its own account or VM.
-
-## Repository layout
+Layout, if you want to poke around:
 
 ```text
 cmd/reading-relay/          Service entry point
@@ -112,20 +70,28 @@ reading-relay.service       Hardened systemd unit
 reading-relay.env.example   Non-secret configuration example
 ```
 
-## Requirements
+## The security story
 
-- Linux
-- Go 1.25 or newer
-- An Instapaper account
-- An Owner Only Instapaper API application
-- systemd for the reference persistent deployment
-- A Kobo with Instapaper integration if Kobo delivery is desired
+The rule I cared about most: agents never see the Instapaper credentials. My agents are helpful. They are also never getting my passwords.
 
-The included systemd unit is tailored to an exe.dev VM, whose default service
-user is `exedev`. On another Linux host, change `User=` and `Group=` before
-installing the unit.
+- Instapaper secrets are loaded only by the systemd service, from root-owned files.
+- `readerctl` and the agent skill contain zero upstream credentials.
+- The write API exists only on a local Unix socket.
+- The article listener binds to loopback by default, and generated article pages require identity headers from a trusted proxy.
+- Draft creation is local; an Instapaper write requires `--send`.
+- Credentials, databases, env files, and build artifacts are all gitignored.
 
-## Build and test
+One honest caveat: agent labels (`--agent research-agent`) are an allowlist for policy and audit, and that's all they are. When every agent runs under the same OS account, a label is a name tag, and a determined process could wear someone else's. If your host is multi-user or you don't trust local processes, put the relay in its own account or VM.
+
+This is a personal service, built for exactly one owner. Pointing strangers at it would be a bad time; review the assumptions above before you do anything of the sort.
+
+## Where it runs
+
+My reference deployment is an [exe.dev](https://exe.dev) VM. Generated article pages trust the `X-ExeDev-UserID` and `X-ExeDev-Email` headers that exe.dev's authenticated proxy injects, and the systemd unit uses exe.dev's default `exedev` service account.
+
+Most of the code isn't exe.dev-specific, though. The relay, CLI, SQLite store, renderer, and Instapaper client are ordinary Linux/Go components. To run behind a different proxy, adapt the identity-header checks in `internal/relay/http.go` and change `User=`/`Group=` in the unit. Whatever you do, don't expose the article handler directly while trusting headers an untrusted client can spoof.
+
+## Build it
 
 ```bash
 git clone https://github.com/andrewedunn/agent-reading-relay.git
@@ -134,52 +100,21 @@ make test
 make build
 ```
 
-The build creates:
+That produces `bin/reading-relay` and `bin/readerctl`. If you're the belt-and-suspenders type, `go vet ./...` and `go test -race ./...` also pass.
 
-```text
-bin/reading-relay
-bin/readerctl
-```
+This runs on Linux, builds with Go 1.25 or newer, and uses systemd for the persistent deployment. You'll also need an Instapaper account and API application. If you want the same downstream setup, you'll need a Kobo with the Instapaper integration signed in. That's next.
 
-Additional checks:
+## Point it at Instapaper
 
-```bash
-go vet ./...
-go test -race ./...
-```
+Register an application on Instapaper's [developer site](https://www.instapaper.com/api). It can stay in Owner Only mode. You'll get a consumer key and consumer secret. Don't commit them, and don't paste them into an agent conversation. The whole design assumes agents never touch these.
 
-## Create an Instapaper application
-
-Sign in to Instapaper's developer site and register an application. New
-applications can remain in Owner Only mode for a personal relay.
-
-You will need the application's consumer key and consumer secret. Do not put
-these values in this repository or paste them into an agent conversation.
-
-## Configure credentials
-
-Build the binaries, then run the interactive setup command:
+Then run the interactive setup:
 
 ```bash
 sudo ./bin/readerctl configure-instapaper
 ```
 
-It prompts for:
-
-1. Instapaper consumer key
-2. Instapaper consumer secret
-3. Instapaper username or email
-4. Instapaper password
-
-Instapaper requires xAuth to obtain the access token. The password is used for
-that exchange and is not written to disk. The resulting OAuth credential files
-are stored as root-owned mode `0600` files under:
-
-```text
-/etc/reading-relay/credentials/
-```
-
-The four files are:
+It asks for four things: the consumer key, the consumer secret, your Instapaper username or email, and your password. Instapaper requires xAuth to mint the access token, so the password is used once for that exchange and never written to disk. What lands on disk are four root-owned mode `0600` files under `/etc/reading-relay/credentials/`:
 
 ```text
 instapaper_consumer_key
@@ -188,9 +123,9 @@ instapaper_access_token
 instapaper_access_token_secret
 ```
 
-## Configure the service
+## Configure and start the service
 
-Install the non-secret configuration file:
+Install the non-secret config and edit it:
 
 ```bash
 sudo install -d -m 0700 /etc/reading-relay
@@ -199,7 +134,7 @@ sudo install -m 0644 reading-relay.env.example \
 sudo editor /etc/reading-relay/reading-relay.env
 ```
 
-Example:
+The example config covers the normal non-secret runtime settings:
 
 ```dotenv
 READING_RELAY_PUBLIC_ADDR=127.0.0.1:8484
@@ -210,17 +145,9 @@ READING_RELAY_DB_PATH=/var/lib/reading-relay/relay.sqlite3
 READING_RELAY_SOCKET_PATH=/run/reading-relay/relay.sock
 ```
 
-`READING_RELAY_PUBLIC_BASE_URL` must be a stable URL for generated articles.
-When using exe.dev, select a proxy port and use that port's HTTPS URL.
+`READING_RELAY_PUBLIC_BASE_URL` needs to be a stable URL for generated articles. On exe.dev, pick a proxy port and use that port's HTTPS URL.
 
-## Install and start
-
-Review the unit and environment file first. The supplied hardened unit requires
-all four credential files at startup; configure Instapaper before enabling it.
-Credential-free draft-only mode is available when running the binary manually,
-but not through this unit.
-
-Then install and start it:
+The supplied unit refuses to start without all four credential files, so configure Instapaper first. (You can run the binary by hand in credential-free, draft-only mode, but the unit is all-or-nothing on purpose.) Then:
 
 ```bash
 make install
@@ -228,23 +155,17 @@ sudo systemctl enable --now reading-relay.service
 systemctl status reading-relay.service
 ```
 
-Useful operations:
+Day-to-day operations are the usual suspects:
 
 ```bash
 journalctl -u reading-relay.service -f
 sudo systemctl restart reading-relay.service
-sudo systemctl stop reading-relay.service
-```
-
-Health check:
-
-```bash
 curl http://127.0.0.1:8484/healthz
 ```
 
-## Use `readerctl`
+## Using readerctl
 
-### Create a local draft from Markdown
+Create a local draft from Markdown:
 
 ```bash
 readerctl publish \
@@ -254,18 +175,9 @@ readerctl publish \
   --agent research-agent
 ```
 
-### Send generated Markdown to Instapaper
+Add `--send` to the same command and the draft goes out to Instapaper. That flag is the entire line between "the agent drafted something" and "something left the machine", so agents are taught to ask before using it.
 
-```bash
-readerctl publish \
-  --title "Weekly AI Brief" \
-  --description "A sourced summary of this week's important changes" \
-  --file /tmp/weekly-ai-brief.md \
-  --agent research-agent \
-  --send
-```
-
-### Save an existing web article
+Saving an existing article works the same way:
 
 ```bash
 readerctl save-url \
@@ -275,7 +187,7 @@ readerctl save-url \
   --send
 ```
 
-Successful commands return JSON:
+Successful commands return JSON an agent can act on:
 
 ```json
 {
@@ -287,10 +199,9 @@ Successful commands return JSON:
 }
 ```
 
-## Install the Hermes skill
+## Teach your agents
 
-The skill is intentionally uncredentialed. Copy it into each profile that should
-be able to use the relay:
+The skill file is intentionally uncredentialed, so copying it around is safe. Drop it into each agent profile that should be able to use the relay:
 
 ```bash
 mkdir -p ~/.hermes/profiles/PROFILE/skills/productivity/send-to-reader
@@ -298,116 +209,48 @@ cp skill/send-to-reader/SKILL.md \
   ~/.hermes/profiles/PROFILE/skills/productivity/send-to-reader/SKILL.md
 ```
 
-New agent sessions will discover the skill. The skill instructs agents to:
+New sessions discover it automatically. The skill tells agents to keep drafts and external sends separate, get explicit authorization before `--send`, always pass an agent label and a title, preserve source citations, keep secrets out of articles, format for a narrow screen, and report back the article ID and delivery status.
 
-- distinguish drafts from external sends
-- require explicit authorization before using `--send`
-- include an agent label and title
-- preserve source citations
-- avoid secrets and sensitive material
-- format generated Markdown for a narrow e-reader screen
-- report the resulting article and delivery status
+## Markdown that reads well on e-ink
 
-## Generated Markdown best practices
+A Kobo screen is narrow and patient. The relay works best with simple, semantic Markdown, and there's no required article template. What I tell my agents:
 
-The relay works best with simple, semantic Markdown. Different automations can
-choose different structures; no fixed article template is required.
-
-- Pass the title through `--title` instead of repeating it as a top-level H1.
-- Prefer short paragraphs and descriptive H2/H3 headings.
-- Use lists when they genuinely improve scanning.
-- Convert tables into bullets, labeled sections, or prose.
+- Pass the title through `--title`; don't repeat it as an H1.
+- Short paragraphs, descriptive H2/H3 headings.
+- Lists only where they genuinely help scanning.
+- Turn tables into bullets, labeled sections, or prose. Tables and e-ink don't get along.
 - Keep code blocks short and narrow.
-- Avoid raw HTML and layout-oriented markup.
-- Use images sparingly, with alt text and absolute URLs.
-- Prefer descriptive inline links or a simple Sources section.
-- Do not rely on Markdown footnotes; the current renderer does not create true
-  formatted footnotes.
+- No raw HTML or layout tricks.
+- Images sparingly, with alt text and absolute URLs.
+- Descriptive inline links or a simple sources section at the end.
+- Skip Markdown footnotes; the renderer doesn't produce real formatted footnotes yet.
 
-## Operational behavior
+## How delivery behaves
 
-### Drafts and delivery
+Every publish request is stored before anything external happens. Articles move through four states: `draft`, `sending`, `delivered`, `failed`. If the service restarts mid-send, the interrupted article is marked failed and can be retried. When two requests race for the same article, exactly one wins the delivery claim.
 
-A publish request is stored before external delivery. Drafts remain local until a
-caller explicitly requests a send. Delivery states are:
+Deduplication means agents can be sloppy and I still get one copy. Generated documents are identified by a hash of their title, description, source URL, and Markdown; saved URLs are keyed by the URL. Repeating an already-delivered request returns the existing state instead of sending the article twice.
 
-- `draft`
-- `sending`
-- `delivered`
-- `failed`
-
-If the service restarts during a send, the interrupted article is marked failed
-and can be retried. Concurrent requests for the same article cannot both win the
-external-delivery claim.
-
-### Deduplication
-
-Generated documents use a content-derived identity. Existing URLs are keyed by
-their URL. Pending URL metadata can be corrected before delivery. Repeating an
-already-delivered request returns the existing delivery state instead of sending
-a second copy.
-
-### Revocation
-
-To revoke access:
+And if I ever want to pull the plug:
 
 ```bash
 sudo systemctl stop reading-relay.service
 sudo rm /etc/reading-relay/credentials/instapaper_*
 ```
 
-Then revoke or rotate the corresponding Instapaper application credentials.
-The hardened systemd unit will not start without the complete credential set.
+Then rotate the Instapaper application credentials. The unit won't start again without the full credential set, which is the point.
 
-## Troubleshooting
+## When it breaks
 
-### `call reading relay: ... no such file or directory`
+Four failure modes and what they mean:
 
-The service is not running, or `READING_RELAY_SOCKET_PATH` differs between the
-service and `readerctl`.
+- `call reading relay: ... no such file or directory` means the service is down, or the service and `readerctl` disagree about `READING_RELAY_SOCKET_PATH`. Check `systemctl status reading-relay.service` and `stat /run/reading-relay/relay.sock`.
+- `Instapaper delivery is not configured` means the four credential files are missing, usually because the binary was started outside the systemd unit.
+- Article in Instapaper but not on the Kobo: the relay's job ended at Instapaper. Check that the Kobo's Instapaper integration is signed in, then trigger a sync on the device.
+- Generated page returns `authentication required`: the article page expects the trusted proxy's identity headers. Hitting the loopback listener directly doesn't carry them, so this one is working as intended.
 
-```bash
-systemctl status reading-relay.service
-stat /run/reading-relay/relay.sock
-```
+## Hacking on it
 
-### `Instapaper delivery is not configured`
+`go test ./...`, `go test -race ./...`, and `go vet ./...` are the loop. Behavior changes should come with tests, and there are a few properties I'd ask you to preserve: OAuth signature compatibility, draft-by-default semantics, explicit authorization for external sends, Unix-socket-only write access, sanitization of generated HTML, and atomic delivery claims.
 
-The four credential files are missing or the service was started outside the
-systemd unit without a credential directory.
-
-### Article is in Instapaper but not on Kobo
-
-Confirm that Kobo's Instapaper integration is signed in, then trigger a Kobo sync.
-The relay sends to Instapaper; Kobo delivery is downstream of that account sync.
-
-### Generated page returns `authentication required`
-
-The article page expects the configured trusted proxy to inject its identity
-headers. Direct requests to the loopback listener do not carry those headers.
-
-## Development
-
-```bash
-go test ./...
-go test -race ./...
-go vet ./...
-```
-
-Behavior changes should include tests. In particular, preserve:
-
-- OAuth signature compatibility
-- draft-by-default semantics
-- explicit external-send authorization
-- Unix-socket-only write access
-- sanitization of generated HTML
-- atomic delivery claims
-
-## Project status
-
-This is a small personal-service project rather than a hosted product. Review the
-security assumptions and deployment unit before using it on a different host.
-
-## License
-
-MIT. See `LICENSE`.
+This stays a small personal project. Read the security section twice before running it on a host that isn't shaped like mine. MIT licensed; see [`LICENSE`](https://github.com/andrewedunn/agent-reading-relay/blob/main/LICENSE).
